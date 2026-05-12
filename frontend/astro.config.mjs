@@ -23,6 +23,11 @@ export default defineConfig({
 		},
 
     plugins: [tailwindcss()],
+
+    build: {
+      sourcemap: false,
+      reportCompressedSize: false,
+    },
   },
 
   integrations: [react()],

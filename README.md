@@ -70,7 +70,11 @@ docker compose up --build
 
 Сборка образа **astro**: после строки **`[vite] ✓ built`** в логе долго может **не появляться новых строк** — идёт бандл островов (React) и генерация HTML. На VPS с 1 vCPU это часто **5–15 минут**; это не зависание, **не нажимай Ctrl+C**. В Dockerfile перед/после `astro build` выводится маркер в лог.
 
-**VPS ~1 ГБ RAM:** в образе фронта для этапа сборки задан небольшой heap (**512 МБ**), чтобы не раздувать память как при `4096` и не уходить в своп. Если `astro build` падает по **JavaScript heap out of memory**, добавь на сервер **swap** (например 1–2 ГБ) или собирай образ на машине с большим RAM и переноси только готовые образы/registry.
+**VPS ~1 ГБ RAM:** в образе фронта для этапа сборки задан heap **512 МБ** (`NODE_OPTIONS`); в `astro.config` для prod-сборки отключены **sourcemap**, чтобы снизить пик памяти. Пока в логе нет строки **`>>> astro build OK <<<`**, процесс живой — не прерывать **до ~15–20 мин** на 1 vCPU. Если падает **heap out of memory**, добавь swap, например:
+
+`sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+
+либо собирай образ не на этом VPS.
 
 Собрать только фронт и смотреть лог: `docker-compose build astro` (или `docker compose build astro`). При ошибке **`--mount requires BuildKit`**: `export DOCKER_BUILDKIT=1` перед сборкой или Docker Engine из официального репозитория.
 
