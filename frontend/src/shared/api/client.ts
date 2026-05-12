@@ -4,7 +4,7 @@ export const STORAGE_USER_TOKEN = "course-portal:userToken";
 export const STORAGE_ADMIN_TOKEN = "course-portal:adminToken";
 
 export function apiBase(): string {
-	return import.meta.env.PUBLIC_API_URL ?? "http://localhost:4000";
+	return import.meta.env.PUBLIC_API_URL ?? "http://localhost:4444";
 }
 
 export function getUserToken(): string | null {
