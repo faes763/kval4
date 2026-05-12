@@ -1,0 +1,384 @@
+stages:
+  - build_image
+  - notify
+  - trigger_deploy
+
+default:
+  image: docker:27.3.1
+  services:
+    - name: docker:27.3.1-dind
+      alias: docker
+      command: ["--tls=false", "--host=tcp://0.0.0.0:2375"]
+  before_script:
+    - apk add --no-cache bash curl jq git findutils
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  APP_NAME: "ton-service-dev"
+  REGISTRY: "cr.selcloud.ru"
+  REGISTRY_NAMESPACE: "kefirium"
+  DOCKERFILE_DIR: ""
+  DOCKER_IMAGE_PREFIX: "ton"
+  IMAGE_TAG: "$CI_PIPELINE_IID"
+  GEMINI_MODEL: "gemini-2.5-flash"
+  GEMINI_PROXY_URL: ""
+  TELEGRAM_PROXY_URL: ""
+
+build_and_push_image:
+  stage: build_image
+  script:
+    - |
+      set -euo pipefail
+      : > build.env
+
+      if ! docker info >/dev/null 2>&1; then
+        if [ -S /var/run/docker.sock ]; then
+          export DOCKER_HOST="unix:///var/run/docker.sock"
+          docker info >/dev/null 2>&1 || {
+            echo "Docker daemon is unavailable (dind and host socket both failed)."
+            exit 1
+          }
+        else
+          echo "Docker daemon is unavailable and /var/run/docker.sock is missing."
+          echo "Enable privileged dind on runner or mount host docker socket."
+          exit 1
+        fi
+      fi
+
+      if [ -n "${REGISTRY}" ]; then
+        IMAGE_REPO_PATH="${REGISTRY_NAMESPACE}/${APP_NAME}"
+        IMAGE="${REGISTRY}/${IMAGE_REPO_PATH}"
+      else
+        IMAGE_NAMESPACE="${DOCKERHUB_USER:-${DOCKER_IMAGE_PREFIX}}"
+        if [ -z "${IMAGE_NAMESPACE}" ]; then
+          echo "Image namespace is empty. Set DOCKERHUB_USER or DOCKER_IMAGE_PREFIX."
+          exit 1
+        fi
+        IMAGE="${IMAGE_NAMESPACE}/${APP_NAME}"
+      fi
+
+      if [ -n "${DOCKERFILE_DIR}" ]; then
+        cd "${DOCKERFILE_DIR}"
+        docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+      else
+        DOCKERFILE_PATH="$(find . -maxdepth 4 \( -iname 'Dockerfile' -o -iname '*.Dockerfile' \) | sort | head -1)"
+        if [ -z "${DOCKERFILE_PATH}" ]; then
+          echo "Dockerfile not found"
+          exit 1
+        fi
+        BUILD_CTX="$(dirname "${DOCKERFILE_PATH}")"
+        DOCKERFILE_NAME="$(basename "${DOCKERFILE_PATH}")"
+        cd "${BUILD_CTX}"
+        docker build -f "${DOCKERFILE_NAME}" -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+      fi
+
+      LOGIN_SERVER="${REGISTRY:-docker.io}"
+      REGISTRY_USER_VALUE="${REGISTRY_USER:-${DOCKERHUB_USER:-}}"
+      REGISTRY_PASS_VALUE="${REGISTRY_PASS:-${DOCKERHUB_PASS:-}}"
+      if [ -z "${REGISTRY_USER_VALUE}" ] || [ -z "${REGISTRY_PASS_VALUE}" ]; then
+        echo "Registry credentials are missing. Set REGISTRY_USER/REGISTRY_PASS (or DOCKERHUB_USER/DOCKERHUB_PASS)."
+        exit 1
+      fi
+      echo "${REGISTRY_PASS_VALUE}" | docker login -u "${REGISTRY_USER_VALUE}" --password-stdin "${LOGIN_SERVER}"
+      docker push "${IMAGE}:${IMAGE_TAG}"
+      docker push "${IMAGE}:latest"
+
+      printf 'REMOTE_IMAGE=%s\n' "${IMAGE}" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+  after_script:
+    - |
+      set +e
+      if [ -n "${REGISTRY}" ]; then
+        IMAGE_REPO_PATH="${REGISTRY_NAMESPACE}/${APP_NAME}"
+        IMAGE="${REGISTRY}/${IMAGE_REPO_PATH}"
+      else
+        IMAGE_NAMESPACE="${DOCKERHUB_USER:-${DOCKER_IMAGE_PREFIX}}"
+        IMAGE="${IMAGE_NAMESPACE}/${APP_NAME}"
+      fi
+      docker rmi "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:latest" 2>/dev/null || true
+      docker logout "${REGISTRY:-docker.io}" || true
+
+notify_build_success:
+  stage: notify
+  needs: ["build_and_push_image"]
+  image: alpine:3.20
+  services: []
+  before_script:
+    - apk add --no-cache bash curl jq git
+  script:
+    - |
+      set -euo pipefail
+      echo "DEBUG: notify_build_success started"
+      echo "DEBUG: CI_PROJECT_NAME=${CI_PROJECT_NAME}, CI_PIPELINE_IID=${CI_PIPELINE_IID}, CI_COMMIT_BRANCH=${CI_COMMIT_BRANCH:-}"
+      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        echo "DEBUG: TELEGRAM_BOT_TOKEN is set"
+      else
+        echo "DEBUG: TELEGRAM_BOT_TOKEN is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_PROXY_URL:-}" ]; then
+        export ALL_PROXY="${TELEGRAM_PROXY_URL}"
+        export HTTPS_PROXY="${TELEGRAM_PROXY_URL}"
+        echo "DEBUG: TELEGRAM_PROXY_URL is set"
+      else
+        echo "DEBUG: TELEGRAM_PROXY_URL is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        echo "DEBUG: TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+      else
+        echo "DEBUG: TELEGRAM_CHAT_ID is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_TOPIC_ID:-}" ]; then
+        echo "DEBUG: TELEGRAM_TOPIC_ID=${TELEGRAM_TOPIC_ID}"
+      else
+        echo "DEBUG: TELEGRAM_TOPIC_ID is not set"
+      fi
+
+      SUMMARY=""
+      COMMIT_MSG="$(git log -1 --pretty=%B)"
+      COMMIT_TITLE="${CI_COMMIT_TITLE:-}"
+      if [ -z "${COMMIT_TITLE}" ]; then
+        COMMIT_TITLE="$(printf '%s' "${COMMIT_MSG}" | head -n 1)"
+      fi
+      if [ -z "${COMMIT_TITLE}" ]; then
+        COMMIT_TITLE="(без названия)"
+      fi
+      SAFE_COMMIT_TITLE="$(printf '%s' "${COMMIT_TITLE}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+      BRANCH="${CI_COMMIT_BRANCH:-}"
+      if [ -z "${BRANCH}" ]; then
+        BRANCH="(unknown)"
+      fi
+      BRANCH_EMOJI="🧩"
+      case "${BRANCH}" in
+        main) BRANCH_EMOJI="🚀" ;;
+        master) BRANCH_EMOJI="⭐" ;;
+        dev) BRANCH_EMOJI="🧪" ;;
+        staging) BRANCH_EMOJI="🟣" ;;
+        release*) BRANCH_EMOJI="📦" ;;
+        hotfix*) BRANCH_EMOJI="🛠️" ;;
+        feature*) BRANCH_EMOJI="⚙️" ;;
+        *) BRANCH_EMOJI="🧩" ;;
+      esac
+      SAFE_BRANCH="$(printf '%s' "${BRANCH}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+      COMMIT_SHA="${CI_COMMIT_SHORT_SHA:-${CI_COMMIT_SHA:-}}"
+      if [ -z "${COMMIT_SHA}" ]; then
+        COMMIT_SHA="(no sha)"
+      fi
+      SAFE_COMMIT_SHA="$(printf '%s' "${COMMIT_SHA}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+      COMMIT_AUTHOR="${CI_COMMIT_AUTHOR:-}"
+      if [ -z "${COMMIT_AUTHOR}" ]; then
+        COMMIT_AUTHOR="(unknown)"
+      fi
+      SAFE_COMMIT_AUTHOR="$(printf '%s' "${COMMIT_AUTHOR}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+      COMMIT_URL=""
+      if [ -n "${CI_PROJECT_URL:-}" ] && [ -n "${CI_COMMIT_SHA:-}" ]; then
+        COMMIT_URL="${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}"
+      fi
+      SAFE_COMMIT_URL="$(printf '%s' "${COMMIT_URL}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+      LINK_APPEND=""
+      if [ -n "${COMMIT_URL}" ]; then
+        LINK_APPEND="$(printf '\n🔗 <a href="%s">Коммит в GitLab</a>' "${SAFE_COMMIT_URL}")"
+      fi
+      GIT_DIFF="$(git diff HEAD^ HEAD 2>/dev/null || true)"
+      DIFF_MAX=12000
+      if [ "${#GIT_DIFF}" -gt "${DIFF_MAX}" ]; then
+        GIT_DIFF="${GIT_DIFF:0:${DIFF_MAX}}\n\n[... обрезано, всего ${#GIT_DIFF} символов]"
+      fi
+
+      INPUT_BLOCK="Сообщение коммита:\n${COMMIT_MSG}"
+      if [ -n "${GIT_DIFF}" ]; then
+        INPUT_BLOCK="${INPUT_BLOCK}\n\nDiff (git diff HEAD^ HEAD):\n${GIT_DIFF}"
+      fi
+      PROMPT="Ты — технический лид. Кратко и по делу опиши, что изменилось в этом коммите, для отчёта команде. Только суть, на русском, 1-3 предложения.\n\n${INPUT_BLOCK}"
+
+      if [ -n "${GEMINI_PROXY_URL:-}" ]; then
+        echo "DEBUG: using GEMINI_PROXY_URL for summary"
+        CLEAN_PROXY_URL="${GEMINI_PROXY_URL%/}"
+        BODY="$(jq -n --arg prompt "${PROMPT}" '{prompt:$prompt}')"
+        RESP="$(curl -s --connect-timeout 5 --max-time 30 -X POST "${CLEAN_PROXY_URL}/summary" -H 'Content-Type: application/json' -d "${BODY}" || true)"
+        SUMMARY="$(echo "${RESP}" | jq -r '.summary // empty')"
+      elif [ -n "${GEMINI_API_KEY:-}" ]; then
+        echo "DEBUG: using GEMINI_API_KEY for summary"
+        GEMINI_KEY="$(printf '%s' "${GEMINI_API_KEY}" | tr -d '\n\r')"
+        BODY="$(jq -n --arg text "${PROMPT}" '{contents:[{parts:[{text:$text}]}]}')"
+        RESP="$(curl -s --connect-timeout 5 --max-time 30 -X POST "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}" -H 'Content-Type: application/json' -d "${BODY}" || true)"
+        SUMMARY="$(echo "${RESP}" | jq -r '.candidates[0].content.parts[0].text // empty')"
+      else
+        echo "DEBUG: Gemini summary skipped (no GEMINI_PROXY_URL and no GEMINI_API_KEY)"
+      fi
+      if [ -n "${SUMMARY}" ]; then
+        echo "DEBUG: summary generated"
+      else
+        echo "DEBUG: summary is EMPTY"
+      fi
+
+      BASE="$(printf '%s <b>%s</b> #%s\n\n✅ Образ <code>%s:%s</code> собран и запушен.\n🧾 <b>Коммит:</b> %s\n🌿 <b>Ветка:</b> %s\n🔢 <b>SHA:</b> <code>%s</code>\n👤 <b>Автор:</b> %s%s' "${BRANCH_EMOJI}" "${CI_PROJECT_NAME}" "${CI_PIPELINE_IID}" "${APP_NAME}" "${IMAGE_TAG}" "${SAFE_COMMIT_TITLE}" "${SAFE_BRANCH}" "${SAFE_COMMIT_SHA}" "${SAFE_COMMIT_AUTHOR}" "${LINK_APPEND}")"
+      APPEND=""
+      if [ -n "${SUMMARY}" ]; then
+        SAFE_SUMMARY="$(printf '%s' "${SUMMARY}" | sed 's/</\&lt;/g; s/>/\&gt;/g')"
+        APPEND="$(printf '\n\n📝 %s' "${SAFE_SUMMARY}")"
+      fi
+      MESSAGE="${BASE}${APPEND}"
+
+      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        TG_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        TG_RESP_FILE="$(mktemp)"
+        TG_HTTP_CODE=""
+        if [ -n "${TELEGRAM_TOPIC_ID:-}" ]; then
+          TG_HTTP_CODE="$(curl -s -o "${TG_RESP_FILE}" -w '%{http_code}' -X POST "${TG_URL}" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            -d "message_thread_id=${TELEGRAM_TOPIC_ID}" \
+            --data-urlencode "text=${MESSAGE}" || true)"
+        else
+          TG_HTTP_CODE="$(curl -s -o "${TG_RESP_FILE}" -w '%{http_code}' -X POST "${TG_URL}" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${MESSAGE}" || true)"
+        fi
+        TG_OK="$(jq -r '.ok // "false"' "${TG_RESP_FILE}" 2>/dev/null || echo "false")"
+        TG_ERR_CODE="$(jq -r '.error_code // empty' "${TG_RESP_FILE}" 2>/dev/null || true)"
+        TG_ERR_DESC="$(jq -r '.description // empty' "${TG_RESP_FILE}" 2>/dev/null || true)"
+        echo "DEBUG: telegram http_code=${TG_HTTP_CODE:-empty} ok=${TG_OK}"
+        if [ -n "${TG_ERR_CODE}" ] || [ -n "${TG_ERR_DESC}" ]; then
+          echo "DEBUG: telegram error_code=${TG_ERR_CODE:-none} description=${TG_ERR_DESC:-none}"
+        fi
+        rm -f "${TG_RESP_FILE}"
+      else
+        echo "Telegram vars are not set (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID), skip notify"
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+notify_build_failure:
+  stage: notify
+  image: alpine:3.20
+  services: []
+  before_script:
+    - apk add --no-cache bash curl jq
+  script:
+    - |
+      set -euo pipefail
+      echo "DEBUG: notify_build_failure started"
+      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        echo "DEBUG: TELEGRAM_BOT_TOKEN is set"
+      else
+        echo "DEBUG: TELEGRAM_BOT_TOKEN is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_PROXY_URL:-}" ]; then
+        export ALL_PROXY="${TELEGRAM_PROXY_URL}"
+        export HTTPS_PROXY="${TELEGRAM_PROXY_URL}"
+        echo "DEBUG: TELEGRAM_PROXY_URL is set"
+      else
+        echo "DEBUG: TELEGRAM_PROXY_URL is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        echo "DEBUG: TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+      else
+        echo "DEBUG: TELEGRAM_CHAT_ID is EMPTY"
+      fi
+      if [ -n "${TELEGRAM_TOPIC_ID:-}" ]; then
+        echo "DEBUG: TELEGRAM_TOPIC_ID=${TELEGRAM_TOPIC_ID}"
+      else
+        echo "DEBUG: TELEGRAM_TOPIC_ID is not set"
+      fi
+      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        COMMIT_TITLE="${CI_COMMIT_TITLE:-"(без названия)"}"
+        SAFE_COMMIT_TITLE="$(printf '%s' "${COMMIT_TITLE}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+        BRANCH="${CI_COMMIT_BRANCH:-}"
+        if [ -z "${BRANCH}" ]; then
+          BRANCH="(unknown)"
+        fi
+        BRANCH_EMOJI="🧩"
+        case "${BRANCH}" in
+          main) BRANCH_EMOJI="🚀" ;;
+          master) BRANCH_EMOJI="⭐" ;;
+          dev) BRANCH_EMOJI="🧪" ;;
+          staging) BRANCH_EMOJI="🟣" ;;
+          release*) BRANCH_EMOJI="📦" ;;
+          hotfix*) BRANCH_EMOJI="🛠️" ;;
+          feature*) BRANCH_EMOJI="⚙️" ;;
+          *) BRANCH_EMOJI="🧩" ;;
+        esac
+        SAFE_BRANCH="$(printf '%s' "${BRANCH}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+        COMMIT_SHA="${CI_COMMIT_SHORT_SHA:-${CI_COMMIT_SHA:-}}"
+        if [ -z "${COMMIT_SHA}" ]; then
+          COMMIT_SHA="(no sha)"
+        fi
+        SAFE_COMMIT_SHA="$(printf '%s' "${COMMIT_SHA}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+        COMMIT_AUTHOR="${CI_COMMIT_AUTHOR:-}"
+        if [ -z "${COMMIT_AUTHOR}" ]; then
+          COMMIT_AUTHOR="(unknown)"
+        fi
+        SAFE_COMMIT_AUTHOR="$(printf '%s' "${COMMIT_AUTHOR}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+        COMMIT_URL=""
+        if [ -n "${CI_PROJECT_URL:-}" ] && [ -n "${CI_COMMIT_SHA:-}" ]; then
+          COMMIT_URL="${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}"
+        fi
+        SAFE_COMMIT_URL="$(printf '%s' "${COMMIT_URL}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+        LINK_APPEND=""
+        if [ -n "${COMMIT_URL}" ]; then
+          LINK_APPEND="$(printf '\n🔗 <a href="%s">Коммит в GitLab</a>' "${SAFE_COMMIT_URL}")"
+        fi
+
+        MESSAGE="$(printf '%s <b>%s</b> #%s\n\n❌ Сборка упала.\n🧾 <b>Коммит:</b> %s\n🌿 <b>Ветка:</b> %s\n🔢 <b>SHA:</b> <code>%s</code>\n👤 <b>Автор:</b> %s%s' "${BRANCH_EMOJI}" "${CI_PROJECT_NAME}" "${CI_PIPELINE_IID}" "${SAFE_COMMIT_TITLE}" "${SAFE_BRANCH}" "${SAFE_COMMIT_SHA}" "${SAFE_COMMIT_AUTHOR}" "${LINK_APPEND}")"
+        TG_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        TG_RESP_FILE="$(mktemp)"
+        TG_HTTP_CODE=""
+        if [ -n "${TELEGRAM_TOPIC_ID:-}" ]; then
+          TG_HTTP_CODE="$(curl -s -o "${TG_RESP_FILE}" -w '%{http_code}' -X POST "${TG_URL}" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            -d "message_thread_id=${TELEGRAM_TOPIC_ID}" \
+            --data-urlencode "text=${MESSAGE}" || true)"
+        else
+          TG_HTTP_CODE="$(curl -s -o "${TG_RESP_FILE}" -w '%{http_code}' -X POST "${TG_URL}" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${MESSAGE}" || true)"
+        fi
+        TG_OK="$(jq -r '.ok // "false"' "${TG_RESP_FILE}" 2>/dev/null || echo "false")"
+        TG_ERR_CODE="$(jq -r '.error_code // empty' "${TG_RESP_FILE}" 2>/dev/null || true)"
+        TG_ERR_DESC="$(jq -r '.description // empty' "${TG_RESP_FILE}" 2>/dev/null || true)"
+        echo "DEBUG: telegram http_code=${TG_HTTP_CODE:-empty} ok=${TG_OK}"
+        if [ -n "${TG_ERR_CODE}" ] || [ -n "${TG_ERR_DESC}" ]; then
+          echo "DEBUG: telegram error_code=${TG_ERR_CODE:-none} description=${TG_ERR_DESC:-none}"
+        fi
+        rm -f "${TG_RESP_FILE}"
+      else
+        echo "DEBUG: Telegram vars are not set, skip failure notify"
+      fi
+      exit 1
+  when: on_failure
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+trigger_deploy:
+  stage: trigger_deploy
+  needs: ["build_and_push_image", "notify_build_success"]
+  image: alpine:3.20
+  services: []
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      set -euo pipefail
+      if [ -n "${CD_WEBHOOK_URL:-}" ]; then
+        curl -s -X POST "${CD_WEBHOOK_URL}" >/dev/null
+      else
+        echo "CD_WEBHOOK_URL not set, skip deploy trigger"
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'

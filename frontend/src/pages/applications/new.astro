@@ -1,0 +1,12 @@
+---
+import BaseLayout from "@/app/layouts/BaseLayout.astro";
+---
+
+<BaseLayout title="Переход">
+	<p class="text-muted-foreground text-sm">Перенаправление на страницу заявок…</p>
+	<script is:inline>
+		location.replace(
+			`${window.location.origin}/applications#new-application`,
+		);
+	</script>
+</BaseLayout>

@@ -1,0 +1,52 @@
+// Портал «Корочки.есть» — пользователи и заявки на курсы ДПО
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  login        String        @unique
+  passwordHash String        @map("password_hash")
+  fullName     String        @map("full_name")
+  phone        String
+  email        String
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  applications Application[]
+
+  @@map("users")
+}
+
+model Application {
+  id             Int               @id @default(autoincrement())
+  userId         Int               @map("user_id")
+  courseName     String            @map("course_name")
+  startDate      DateTime          @map("start_date") @db.Date
+  paymentMethod  PaymentMethod     @map("payment_method")
+  status         ApplicationStatus @default(NEW)
+  submittedAt    DateTime          @default(now()) @map("submitted_at")
+  feedback       String?
+  feedbackAt     DateTime?         @map("feedback_at")
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("applications")
+}
+
+enum PaymentMethod {
+  CASH
+  PHONE_TRANSFER
+}
+
+enum ApplicationStatus {
+  NEW
+  IN_PROGRESS
+  COMPLETED
+}

@@ -1,0 +1,8 @@
+---
+import BaseLayout from "@/app/layouts/BaseLayout.astro";
+import { LoginForm } from "@/features/auth/login-form";
+---
+
+<BaseLayout title="Вход">
+	<LoginForm client:load />
+</BaseLayout>
