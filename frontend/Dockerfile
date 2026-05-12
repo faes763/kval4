@@ -14,8 +14,13 @@ ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 ENV NODE_ENV=production
 ENV ASTRO_TELEMETRY_DISABLED=1
 ENV CI=true
+# второй проход Vite + острова React после строки «vite ✓ built» долго молчит на слабом CPU
+# heap ~512 МБ: на VPS с 1 ГБ RAM не ставить 4096 — будет своп и «подвисание»
+ENV NODE_OPTIONS="--max-old-space-size=512"
 
-RUN bun run build
+RUN echo ">>> astro: после «vite ✓ built» ещё долго собираются острова/страницы — не прерывать Ctrl+C <<<" \
+	&& bun run build \
+	&& echo ">>> astro build OK <<<"
 
 FROM oven/bun:alpine AS production
 
