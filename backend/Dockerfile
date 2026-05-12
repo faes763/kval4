@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM oven/bun AS build
 
 WORKDIR /app
@@ -5,7 +7,12 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.json prisma.config.ts ./
 
-RUN bun install
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+ENV HUSKY=0
+
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+	bun install
 
 COPY src src
 
@@ -26,7 +33,12 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.json prisma.config.ts ./
 
-RUN bun install
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+ENV HUSKY=0
+
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+	bun install
 
 COPY src src
 
@@ -51,7 +63,12 @@ RUN apk add --no-cache bash openssl libc6-compat
 COPY package.json bun.lock prisma.config.ts tsconfig.json ./
 COPY src ./src
 
-RUN bun install --frozen-lockfile \
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+ENV HUSKY=0
+
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+	bun install --frozen-lockfile \
 	&& DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
 
 ENV NODE_ENV=production
