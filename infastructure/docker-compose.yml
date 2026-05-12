@@ -28,8 +28,6 @@ services:
       context: ../backend
       dockerfile: Dockerfile
       target: production
-      args:
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     restart: unless-stopped
     ports:
       - "${SERVER_PORT:-4000}:4000"
@@ -54,7 +52,6 @@ services:
       target: production
       args:
         PUBLIC_API_URL: ${PUBLIC_API_URL}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-3000}:3000"

@@ -58,17 +58,17 @@ npm run dev
 docker compose up --build
 ```
 
+На Ubuntu из `apt` часто ставится только **`docker-compose`** (v1, через дефис). Тогда команда: **`docker-compose up --build`**. Плагин **`docker compose`** (с пробелом) ставится отдельно (`docker-compose-plugin` из [репозитория Docker](https://docs.docker.com/engine/install/ubuntu/), не всегда есть в базовом `universe`).
+
 Поднимаются **production**-образы: API на Bun с автоматическим `prisma migrate deploy` при старте, фронт — статический `astro build` и раздача через `serve`. Порты задаются в `infastructure/.env`:
 
 - PostgreSQL: хост-порт `POSTGRES_PORT` → контейнер `:5432`
 - API: `SERVER_PORT` → внутри контейнера слушается `4000`
 - Сайт: `WEB_PORT` → внутри контейнера `3000`
 
-Переменная **`PUBLIC_API_URL`** нужна при **сборке** образа фронта: полный URL API так, как его запрашивает браузер (на удалённом сервере укажите IP или домен и тот же порт, что в `SERVER_PORT`). Задайте её в `infastructure/.env` до `docker compose up --build`.
+Переменная **`PUBLIC_API_URL`** нужна при **сборке** образа фронта: полный URL API так, как его запрашивает браузер (на сервере укажите публичный IP или домен и порт **`SERVER_PORT`**). Задайте её в `infastructure/.env` до сборки.
 
-Сборка на VPS в РФ: в Dockerfiles для `bun install` по умолчанию задано зеркало npm **`registry.npmmirror.com`**; для **`prisma generate`** — **`PRISMA_ENGINES_MIRROR`** (npmmirror) и кэш `~/.cache/prisma`, чтобы быстрее тянуть бинарники движков. Повторные сборки ускоряются кэшем BuildKit. При проблемах с зеркалами:  
-`docker compose build --build-arg NPM_REGISTRY=https://registry.npmjs.org`  
-и при необходимости временно убрать зеркало Prisma из `backend/Dockerfile` (`PRISMA_ENGINES_MIRROR`).
+Сборка образа **astro** после строки `vite ✓ built` может идти ещё несколько минут (второй проход Vite + генерация страниц) — на слабом VPS это не зависание. При ошибке **`--mount requires BuildKit`** включите: `export DOCKER_BUILDKIT=1` или установите плагины **buildx** / актуальный Docker Engine.
 
 ## ER-диаграмма (требование 1.2)
 
