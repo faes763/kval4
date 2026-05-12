@@ -66,8 +66,9 @@ docker compose up --build
 
 Переменная **`PUBLIC_API_URL`** нужна при **сборке** образа фронта: полный URL API так, как его запрашивает браузер (на удалённом сервере укажите IP или домен и тот же порт, что в `SERVER_PORT`). Задайте её в `infastructure/.env` до `docker compose up --build`.
 
-Сборка на VPS в РФ: в Dockerfiles для `bun install` по умолчанию задано зеркало npm **`registry.npmmirror.com`** (быстрее/стабильнее, чем прямой `registry.npmjs.org`). Повторные сборки ускоряются кэшем BuildKit (`--mount=type=cache`). При проблемах с зеркалом:  
-`docker compose build --build-arg NPM_REGISTRY=https://registry.npmjs.org`.
+Сборка на VPS в РФ: в Dockerfiles для `bun install` по умолчанию задано зеркало npm **`registry.npmmirror.com`**; для **`prisma generate`** — **`PRISMA_ENGINES_MIRROR`** (npmmirror) и кэш `~/.cache/prisma`, чтобы быстрее тянуть бинарники движков. Повторные сборки ускоряются кэшем BuildKit. При проблемах с зеркалами:  
+`docker compose build --build-arg NPM_REGISTRY=https://registry.npmjs.org`  
+и при необходимости временно убрать зеркало Prisma из `backend/Dockerfile` (`PRISMA_ENGINES_MIRROR`).
 
 ## ER-диаграмма (требование 1.2)
 
