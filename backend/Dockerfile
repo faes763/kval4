@@ -7,18 +7,11 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.json prisma.config.ts ./
 
-ARG NPM_REGISTRY=https://registry.npmmirror.com
-ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
-ENV HUSKY=0
-ENV PRISMA_ENGINES_MIRROR=https://npmmirror.com/mirrors/prisma-engines
-
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-	bun install
+RUN bun install
 
 COPY src src
 
-RUN --mount=type=cache,target=/root/.cache/prisma \
-	DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
+RUN DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
 
 RUN bunx --bun tsc --noEmit
 
@@ -35,18 +28,11 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.json prisma.config.ts ./
 
-ARG NPM_REGISTRY=https://registry.npmmirror.com
-ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
-ENV HUSKY=0
-ENV PRISMA_ENGINES_MIRROR=https://npmmirror.com/mirrors/prisma-engines
-
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-	bun install
+RUN bun install
 
 COPY src src
 
-RUN --mount=type=cache,target=/root/.cache/prisma \
-	DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
+RUN DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
 
 ENV NODE_ENV=development
 
@@ -67,14 +53,7 @@ RUN apk add --no-cache bash openssl libc6-compat
 COPY package.json bun.lock prisma.config.ts tsconfig.json ./
 COPY src ./src
 
-ARG NPM_REGISTRY=https://registry.npmmirror.com
-ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
-ENV HUSKY=0
-ENV PRISMA_ENGINES_MIRROR=https://npmmirror.com/mirrors/prisma-engines
-
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-	--mount=type=cache,target=/root/.cache/prisma \
-	bun install --frozen-lockfile \
+RUN bun install --frozen-lockfile \
 	&& DATABASE_URL="postgresql://migrate:migrate@localhost:5432/migrate" bunx prisma generate --schema=./src/database/prisma/schema.prisma
 
 ENV NODE_ENV=production
